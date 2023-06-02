@@ -47,13 +47,16 @@ def parse_args():
                         type=int,
                         help="""Custom seed for RNG to generate the entropy
                         buffer. Cannot be used if sec = True.""")
+    parser.add_argument("-d",
+                        "--diversifier",
+                        type=int,
+                        default=0,
+                        help="""A diversifier constant. to be added to the
+                        seed. Needed for backwards compatibility.""")
     return parser.parse_args()
 
 
-def gen_buffer(k: int,
-               out,
-               sec: bool,
-               seed: int):
+def gen_buffer(k: int, out, sec: bool, seed: int, diversifier: int):
 
     if (sec and seed):
         log.error("Options --sec and --seed cannot be used together")
@@ -68,7 +71,7 @@ def gen_buffer(k: int,
         for i in range(k):
             buffer[i] = secrets.randbelow(256)
     else:
-        random.seed(seed)
+        random.seed(seed + diversifier)
         for i in range(k):
             buffer[i] = random.getrandbits(8)
 
@@ -84,8 +87,9 @@ def main():
     out = args.output_file
     sec = args.sec
     seed = args.seed
+    diversifier = args.diversifier
 
-    gen_buffer(k, out, sec, seed)
+    gen_buffer(k, out, sec, seed, diversifier)
 
 
 if __name__ == "__main__":
