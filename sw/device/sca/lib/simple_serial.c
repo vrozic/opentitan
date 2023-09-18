@@ -159,6 +159,7 @@ static void simple_serial_version(const uint8_t *data, size_t data_len) {
 static void simple_serial_seed_prng(const uint8_t *seed, size_t seed_len) {
   SS_CHECK(seed_len == sizeof(uint32_t));
   prng_seed(read_32(seed));
+  simple_serial_send_status(0);
 }
 
 /**

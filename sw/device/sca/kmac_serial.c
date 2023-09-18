@@ -517,6 +517,7 @@ static void sha3_serial_single_absorb(const uint8_t *msg, size_t msg_len) {
 static void sha3_serial_fixed_key_set(const uint8_t *key, size_t key_len) {
   SS_CHECK(key_len == kKeyLength);
   memcpy(key_fixed, key, key_len);
+  simple_serial_send_status(0);
 }
 
 static void sha3_serial_batch(const uint8_t *data, size_t data_len) {
@@ -558,6 +559,8 @@ static void sha3_serial_batch(const uint8_t *data, size_t data_len) {
       batch_digest[j] ^= out[j];
     }
   }
+  // Acknowledge the batch command.
+  simple_serial_send_status(0);
   // Send the batch digest to the host for verification.
   simple_serial_send_packet('r', (uint8_t *)batch_digest, kDigestLength * 4);
 }
@@ -572,6 +575,7 @@ static void sha3_serial_batch(const uint8_t *data, size_t data_len) {
 static void sha3_serial_seed_lfsr(const uint8_t *seed, size_t seed_len) {
   SS_CHECK(seed_len == sizeof(uint32_t));
   sca_seed_lfsr(read_32(seed));
+  simple_serial_send_status(0);
 }
 
 /**

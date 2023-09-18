@@ -157,6 +157,7 @@ static void aes_serial_key_set(const uint8_t *key, size_t key_len) {
   memcpy(key_fixed, key, key_len);
   aes_key_mask_and_config(key_fixed, key_len);
   block_ctr = 0;
+  simple_serial_send_status(0);
 }
 
 /**
@@ -285,6 +286,8 @@ static void aes_serial_batch_encrypt(const uint8_t *data, size_t data_len) {
     aes_encrypt(plaintext, kAesTextLength);
   }
   sca_set_trigger_low();
+  // Acknowledge the batch command.
+  simple_serial_send_status(0);
 
   aes_send_ciphertext(true);
 }
@@ -303,6 +306,7 @@ static void aes_serial_batch_encrypt(const uint8_t *data, size_t data_len) {
 static void aes_serial_fvsr_key_set(const uint8_t *key, size_t key_len) {
   SS_CHECK(key_len == kAesKeyLength);
   memcpy(key_fixed, key, key_len);
+  simple_serial_send_status(0);
 }
 
 /**
@@ -417,6 +421,7 @@ static void aes_serial_fvsr_key_batch_encrypt(const uint8_t *data,
 static void aes_serial_seed_lfsr(const uint8_t *seed, size_t seed_len) {
   SS_CHECK(seed_len == sizeof(uint32_t));
   sca_seed_lfsr(read_32(seed));
+  simple_serial_send_status(0);
 }
 
 /**
