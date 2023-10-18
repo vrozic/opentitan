@@ -30,6 +30,8 @@
  *   - FvsR batch fixed key set ('t')*,
  *   - FvsR batch generate ('g')*,
  *   - FvsR batch encrypt and generate ('f')*,
+ *   - Batch encrypt alternative routine ('a')*,
+ *   - Batch encrypt alternative routine, initial plaintext input ('i')*.
  * Commands marked with * are implemented in this file. Those marked with + are
  * implemented in the simple serial library. Encryption is done in AES-ECB-128
  * mode. See https://wiki.newae.com/SimpleSerial for details on the protocol.
@@ -87,6 +89,11 @@ bool sample_fixed = true;
 uint8_t key_fixed[kAesKeyLength];
 
 /**
+ * batch_plaintext for batch capture to initially set it using command.
+ */
+uint8_t batch_plaintext[kAesTextLength];
+
+/**
  * Block counter variable for manually handling reseeding operations of the
  * masking PRNG inside the AES peripheral.
  */
@@ -102,7 +109,8 @@ dif_aes_transaction_t transaction = {
     .key_provider = kDifAesKeySoftwareProvided,
     .mask_reseeding = kDifAesReseedPer8kBlock,
     .reseed_on_key_change = false,
-    .force_masks = false,
+    //    .force_masks = false,
+    .force_masks = true,
     .ctrl_aux_lock = false,
 };
 
@@ -142,7 +150,7 @@ static void aes_manual_trigger(void) {
 }
 
 /**
- * Simple serial 't' (key set) command handler.
+ * Simple serial 'k' (key set) command handler.
  *
  * This command is designed to set the fixed_key variable and in addition also
  * configures the key into the AES peripheral.
@@ -290,6 +298,89 @@ static void aes_serial_batch_encrypt(const uint8_t *data, size_t data_len) {
 }
 
 /**
+ * Simple serial 'a' (alternative batch encrypt) command handler.
+ *
+ * This command is designed to maximize the capture rate for side-channel
+ * attacks. It uses the first supplied plaintext and repeats AES encryptions
+ * by using every ciphertext as next plaintext with a constant key. This
+ * minimizes the overhead of UART communication and significantly improves the
+ * capture rate.
+
+ * Packet payload must be a `uint32_t` representation of the number of
+ * encryptions to perform. Since generated plaintexts are not cached, there is
+ * no limit on the number of encryptions.
+ *
+ * The key should also be set using 'k' (key set) command.
+ *
+ * The host can verify the operation by checking the last 'r' (ciphertext)
+ * packet that is sent at the end.
+ *
+ * @param data Packet payload.
+ * @param data_len Packet payload length.
+ */
+static void aes_serial_batch_alternative_encrypt(const uint8_t *data,
+                                                 size_t data_len) {
+  // Get num_encryptions from input
+  uint32_t num_encryptions = 0;
+  SS_CHECK(data_len == sizeof(num_encryptions));
+  num_encryptions = read_32(data);
+
+  // Add to current block_ctr to check if > kBlockCtrMax
+  block_ctr += num_encryptions;
+  // Rewrite the key to reset the internal block counter. Otherwise, the AES
+  // peripheral might trigger the reseeding of the internal masking PRNG which
+  // disturbs SCA measurements.
+  if (block_ctr > kBlockCtrMax) {
+    aes_key_mask_and_config(key_fixed, kAesKeyLength);
+    block_ctr = num_encryptions;
+  }
+
+  // First plaintext has been set through command into batch_plaintext
+
+  // Set trigger high outside of loop
+  // On FPGA, the trigger is AND-ed with AES !IDLE and creates a LO-HI-LO per
+  // AES operation
+  sca_set_trigger_high();
+  dif_aes_data_t ciphertext;
+  for (uint32_t i = 0; i < num_encryptions; ++i) {
+    // Encrypt
+    aes_encrypt(batch_plaintext, kAesTextLength);
+
+    // Get ciphertext
+    bool ready = false;
+    do {
+      SS_CHECK_DIF_OK(
+          dif_aes_get_status(&aes, kDifAesStatusOutputValid, &ready));
+    } while (!ready);
+    SS_CHECK_DIF_OK(dif_aes_read_output(&aes, &ciphertext));
+
+    // Use ciphertext as next plaintext (incl. next call to this function)
+    memcpy(batch_plaintext, ciphertext.data, kAesTextLength);
+  }
+  sca_set_trigger_low();
+
+  // send last ciphertext
+  simple_serial_send_packet('r', (uint8_t *)ciphertext.data, kAesTextLength);
+}
+
+/**
+ * Simple serial 'i' (batch plaintext) command handler.
+ *
+ * This command is designed to set the initial plaintext for
+ * aes_serial_batch_alternative_encrypt.
+ *
+ * The plaintext must be `kAesTextLength` bytes long.
+ *
+ * @param plaintext.
+ * @param len.
+ */
+static void aes_serial_batch_plaintext_set(const uint8_t *plaintext,
+                                           size_t len) {
+  SS_CHECK(len == kAesTextLength);
+  memcpy(batch_plaintext, plaintext, len);
+}
+
+/**
  * Simple serial 't' (fvsr key set) command handler.
  *
  * This command is designed to set the fixed key which is used for fvsr key TVLA
@@ -411,12 +502,21 @@ static void aes_serial_fvsr_key_batch_encrypt(const uint8_t *data,
  * Simple serial 'l' (seed lfsr) command handler.
  *
  * This function only supports 4-byte seeds.
+ * Enables/disables masking depending on seed value, i.e. 0 for disable.
  *
  * @param seed A buffer holding the seed.
  */
 static void aes_serial_seed_lfsr(const uint8_t *seed, size_t seed_len) {
   SS_CHECK(seed_len == sizeof(uint32_t));
-  sca_seed_lfsr(read_32(seed));
+  uint32_t seed_local = read_32(seed);
+  if (seed_local == 0) {
+    // disable masking
+    transaction.force_masks = true;
+  } else {
+    // enable masking
+    transaction.force_masks = false;
+  }
+  sca_seed_lfsr(seed_local);
 }
 
 /**
@@ -448,6 +548,8 @@ bool test_main(void) {
   simple_serial_register_handler('g', aes_serial_fvsr_key_batch_generate);
   simple_serial_register_handler('f', aes_serial_fvsr_key_batch_encrypt);
   simple_serial_register_handler('l', aes_serial_seed_lfsr);
+  simple_serial_register_handler('a', aes_serial_batch_alternative_encrypt);
+  simple_serial_register_handler('i', aes_serial_batch_plaintext_set);
 
   LOG_INFO("Initializing AES unit.");
   init_aes();
